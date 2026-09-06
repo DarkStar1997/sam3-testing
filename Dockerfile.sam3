@@ -1,6 +1,4 @@
 # syntax=docker/dockerfile:1.7
-FROM ghcr.io/darkstar1997/flash-attn-wheel:torch2.14-cu130-py312 AS fa-wheel
-
 FROM pytorch/pytorch:2.14.0-cuda13.0-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -15,11 +13,6 @@ ENV PATH="/opt/venv/bin:${PATH}"
 
 # sam3 requires numpy<2; venv-local shadow of system numpy 2.5.2
 RUN pip install --no-cache-dir "numpy>=1.26,<2" setuptools
-
-# flash-attn (optional vision-encoder speedup; sm_89 served via PTX JIT)
-COPY --from=fa-wheel /wheels/ /tmp/wheels/
-RUN pip install --no-cache-dir /tmp/wheels/flash_attn-*.whl \
-    && rm -rf /tmp/wheels
 
 # sam3 deps + repo @ pinned commit (torch/torchvision satisfied via system site-packages)
 RUN pip install --no-cache-dir \
