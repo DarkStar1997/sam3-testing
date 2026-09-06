@@ -62,6 +62,8 @@ def nms(boxes, scores, iou_thr=0.5):
 
 def style_for(prompt):
     p = prompt.lower()
+    if "boundary" in p or "line" in p:
+        return ("line", (0, 255, 255))
     if "ball" in p:
         return ("ball", (0, 255, 0))
     if "goal" in p:
@@ -90,6 +92,8 @@ def main():
     ap.add_argument("--max-boxes", type=int, default=48)
     ap.add_argument("--ball-iou", type=float, default=0.5,
                     help="NMS IoU threshold for ball-class queries")
+    ap.add_argument("--ball-mask", action="store_true",
+                    help="draw ball masks in addition to boxes")
     ap.add_argument("--json-out", default="")
     args = ap.parse_args()
 
@@ -238,12 +242,12 @@ def main():
         pk = probs.cpu().numpy()  # (K,Q) small
         boxes_k = outs["pred_boxes"].cpu().numpy()  # (K,Q,4) cxcywh
 
-        # draw order: area regions first (underneath), then balls/goals/boxes
+        # draw order: area/line regions first (underneath), then boxes
         draw_order = sorted(range(K),
-                            key=lambda k: styles[k][0] != "area")
+                            key=lambda k: styles[k][0] not in ("area", "line"))
         for k in draw_order:
             kind, color = styles[k]
-            if kind == "area":
+            if kind in ("area", "line"):
                 sel = np.where(pk[k] >= args.thresh)[0][:args.max_boxes]
                 if len(sel):
                     mlog_all = outs["pred_masks"][k, sel].cpu().numpy()
@@ -253,8 +257,9 @@ def main():
                                           interpolation=cv2.INTER_LINEAR)
                         union |= sigmoid(mlog) > 0.5
                     if union.any():
-                        blend = frame[union].astype(np.float32) * 0.7 + \
-                            np.float32(color) * 0.3
+                        a_f = 0.3 if kind == "area" else 0.4
+                        blend = frame[union].astype(np.float32) * (1 - a_f) + \
+                            np.float32(color) * a_f
                         frame[union] = blend.astype(np.uint8)
                         cnts, _ = cv2.findContours(
                             union.astype(np.uint8), cv2.RETR_EXTERNAL,
@@ -262,11 +267,18 @@ def main():
                         cv2.drawContours(frame, cnts, -1, color, 2)
                         cls_frames[k] += 1
                         cls_dets[k] += len(sel)
-                        area_pct.append(100.0 * union.sum() / (vw * vh))
-                        cv2.putText(frame, f"{labels[k]} {area_pct[-1]:.0f}%",
-                                    (10, 25 + 22 * k),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
-                                    cv2.LINE_AA)
+                        if kind == "area":
+                            area_pct.append(100.0 * union.sum() / (vw * vh))
+                            cv2.putText(frame, f"{labels[k]} "
+                                        f"{area_pct[-1]:.0f}%",
+                                        (10, 25 + 22 * k),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                        color, 2, cv2.LINE_AA)
+                        else:
+                            cv2.putText(frame, f"{labels[k]} x{len(sel)}",
+                                        (10, 25 + 22 * k),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                        color, 2, cv2.LINE_AA)
             elif kind == "ball":
                 sel = np.where(pk[k] >= args.thresh)[0][:args.max_boxes]
                 if len(sel):
@@ -278,7 +290,8 @@ def main():
                                        (b[0] + b[2] / 2) * vw,
                                        (b[1] + b[3] / 2) * vh))
                     keep = nms(np.array(pboxes), pk[k][sel], args.ball_iou)
-                    mlog_all = outs["pred_masks"][k, sel].cpu().numpy()
+                    if args.ball_mask:
+                        mlog_all = outs["pred_masks"][k, sel].cpu().numpy()
                     best = None
                     for j in keep:
                         q_ = sel[j]
@@ -286,13 +299,14 @@ def main():
                         x1, y1, x2, y2 = pboxes[j]
                         if best is None or score > best[0]:
                             best = (score, x1, y1, x2, y2)
-                        mlog = cv2.resize(mlog_all[j], (vw, vh),
-                                          interpolation=cv2.INTER_LINEAR)
-                        mb = sigmoid(mlog) > 0.5
-                        overlay = np.zeros_like(frame)
-                        overlay[mb] = color
-                        frame[mb] = cv2.addWeighted(overlay, 0.45, frame,
-                                                    0.55, 0)[mb]
+                        if args.ball_mask:
+                            mlog = cv2.resize(mlog_all[j], (vw, vh),
+                                              interpolation=cv2.INTER_LINEAR)
+                            mb = sigmoid(mlog) > 0.5
+                            overlay = np.zeros_like(frame)
+                            overlay[mb] = color
+                            frame[mb] = cv2.addWeighted(overlay, 0.45, frame,
+                                                        0.55, 0)[mb]
                         cv2.rectangle(frame, (int(x1), int(y1)),
                                       (int(x2), int(y2)), color, 2)
                         cv2.putText(frame, f"{labels[k]} {score:.2f}",
