@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1.7
+FROM ghcr.io/darkstar1997/flash-attn-wheel:torch2.14-cu130-py312 AS fa-wheel
+
+FROM pytorch/pytorch:2.14.0-cuda13.0-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/opt/hf-cache
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12-venv git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv --system-site-packages /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# sam3 requires numpy<2; venv-local shadow of system numpy 2.5.2
+RUN pip install --no-cache-dir "numpy>=1.26,<2" setuptools
+
+# flash-attn (optional vision-encoder speedup; sm_89 served via PTX JIT)
+COPY --from=fa-wheel /wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir /tmp/wheels/flash_attn-*.whl \
+    && rm -rf /tmp/wheels
+
+# sam3 deps + repo @ pinned commit (torch/torchvision satisfied via system site-packages)
+RUN pip install --no-cache-dir \
+        timm ftfy==6.1.1 regex iopath einops huggingface_hub \
+        opencv-python-headless==4.11.0.86 Pillow==11.1.0 \
+        "sam3 @ git+https://github.com/facebookresearch/sam3.git@660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
+
+WORKDIR /workspace
+COPY app/ /workspace/
+
+# Bake exactly the checkpoints that model_builder pulls, into the HF cache layout
+RUN --mount=type=secret,id=hf_token,required=true \
+    HF_TOKEN="$(cat /run/secrets/hf_token)" python - <<'EOF'
+from huggingface_hub import hf_hub_download
+for repo, fn in [
+    ("facebook/sam3", "config.json"),
+    ("facebook/sam3", "sam3.pt"),
+    ("facebook/sam3.1", "config.json"),
+    ("facebook/sam3.1", "sam3.1_multiplex.pt"),
+]:
+    p = hf_hub_download(repo_id=repo, filename=fn)
+    print("cached:", p)
+EOF
+
+# runtime import chain needs pycocotools (sam3.train.data collator path)
+RUN pip install --no-cache-dir pycocotools
+
+ENV HF_HUB_OFFLINE=1
+
+CMD ["python", "sam3_infer.py", "--help"]

@@ -1,0 +1,20 @@
+# videos / rendered outputs -- never commit
+*.mp4
+*.avi
+*.mkv
+*.mov
+# model artifacts (75GB in out/) -- distributed via ghcr.io/darkstar1997/sam3-models
+out/
+models/
+hf-cache/
+*.engine
+*.onnx
+*.onnx.data
+*.onnx_data
+*.npz
+*.pkl
+*.pt
+watch_*
+__pycache__/
+*.pyc
+.venv/

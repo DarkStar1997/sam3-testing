@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+# Engine-builder + TRT inference environment: everything needed to run the
+# full chain (export -> w16 -> calibrate -> FP8 quantize -> build engine ->
+# parity -> video) EXCEPT the SAM3 torch checkpoints, which are downloaded
+# on demand (or use Dockerfile.sam3, which bakes them).
+FROM pytorch/pytorch:2.14.0-cuda13.0-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/opt/hf-cache
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12-venv git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv --system-site-packages /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# sam3 requires numpy<2; venv-local shadow of system numpy 2.5.2.
+# Keep this LAST-ish in spirit: any later pip install may drag numpy>=2
+# back in -- reinstall the pin afterwards if imports fail.
+RUN pip install --no-cache-dir "numpy>=1.26,<2" setuptools
+
+# sam3 package (tokenizer + optional torch re-export) + deps
+RUN pip install --no-cache-dir \
+        timm ftfy==6.1.1 regex iopath einops huggingface_hub \
+        opencv-python-headless==4.11.0.86 Pillow==11.1.0 \
+        pycocotools \
+        "sam3 @ git+https://github.com/facebookresearch/sam3.git@660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7" \
+    && pip install --no-cache-dir "numpy>=1.26,<2"
+
+# TRT engine build + ONNX tooling + FP8 quantization + h264 writer
+RUN pip install --no-cache-dir \
+        tensorrt-cu13 onnx onnxscript \
+        "nvidia-modelopt[onnx]==0.46.0" \
+        av \
+    && pip install --no-cache-dir "numpy>=1.26,<2"
+
+WORKDIR /workspace
+COPY app/ /workspace/
+
+# reduce modelopt peak RAM for large graphs (idempotent, verifies anchors)
+RUN python sam3_patch_modelopt.py
+
+CMD ["python", "sam3_trt_build.py", "--help"]
