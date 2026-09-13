@@ -40,6 +40,11 @@ EOF
 # runtime import chain needs pycocotools (sam3.train.data collator path)
 RUN pip install --no-cache-dir pycocotools
 
+# TRT runtime pinned to the version our engines are serialized with
+# (11.2.1.2 = serialization 243; 11.3.x cannot deserialize them) + PyAV writer
+RUN pip install --no-cache-dir tensorrt-cu13==11.2.1.2 av \
+    && pip install --no-cache-dir "numpy>=1.26,<2"
+
 ENV HF_HUB_OFFLINE=1
 
 CMD ["python", "sam3_infer.py", "--help"]

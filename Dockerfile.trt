@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir \
 
 # TRT engine build + ONNX tooling + FP8 quantization + h264 writer
 RUN pip install --no-cache-dir \
-        tensorrt-cu13 onnx onnxscript \
+        tensorrt-cu13==11.2.1.2 onnx onnxscript \
         "nvidia-modelopt[onnx]==0.46.0" \
         av \
     && pip install --no-cache-dir "numpy>=1.26,<2"

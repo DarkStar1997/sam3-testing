@@ -5,9 +5,12 @@ One engine pass per frame covers K text-prompt rows (shared vision trunk).
 Token rows come from a tokens npz (rows of (32,) int64 + optional 'prompts').
 Draw styles by prompt substring:
   *ball*   -> green mask overlay + box for every query >= thresh
-              (NMS-deduped, so multiple balls are drawn)
-  *goal*   -> magenta boxes for every query >= thresh
-  *field*/*pitch*/*area* -> translucent blue union mask of queries
+              (NMS-deduped, so multiple balls are drawn; masks need --ball-mask)
+  *player*/*person*/*athlete* -> orange boxes (union masks + contours with --player-mask)
+  *goal*/*post*/*upright*/*crossbar* -> magenta boxes for every query >= thresh
+              (masks + contours with --goal-mask)
+  *boundary*/*line* -> yellow union mask + contours
+  *field*/*pitch*/*area*/*court*/*floor* -> translucent blue union mask of queries
               >= thresh (drawn first, under everything else)
   other    -> cyan boxes for every query >= thresh
 Producer thread (decode/preprocess) + async writer thread (bounded FIFO queue).
@@ -16,6 +19,7 @@ import argparse
 import faulthandler
 import json
 import queue
+import re
 import signal
 import threading
 import time
@@ -64,13 +68,24 @@ def style_for(prompt):
     p = prompt.lower()
     if "boundary" in p or "line" in p:
         return ("line", (0, 255, 255))
-    if "ball" in p:
+    if re.search(r"\bball\b", p):  # word-boundary: exclude netball/basketball/football
         return ("ball", (0, 255, 0))
-    if "goal" in p:
+    if "score" in p:
+        return ("score", (255, 255, 255))
+    if "player" in p or "person" in p or "athlete" in p:
+        return ("player", (255, 200, 0))
+    if "goal" in p or "post" in p or "upright" in p or "crossbar" in p:
         return ("goal", (255, 0, 255))
-    if "field" in p or "pitch" in p or "area" in p:
+    if "field" in p or "pitch" in p or "area" in p or "court" in p or "floor" in p:
         return ("area", (255, 0, 0))
     return ("box", (255, 200, 0))
+
+
+def mask_to_frame(mlog_288, vw, vh):
+    # sigmoid at 288^2 then NEAREST upsample of the boolean mask: ~25x
+    # cheaper than sigmoid over a full 1080p map per instance
+    mb = (sigmoid(mlog_288) > 0.5).astype(np.uint8)
+    return cv2.resize(mb, (vw, vh), interpolation=cv2.INTER_NEAREST).astype(bool)
 
 
 def main():
@@ -94,6 +109,11 @@ def main():
                     help="NMS IoU threshold for ball-class queries")
     ap.add_argument("--ball-mask", action="store_true",
                     help="draw ball masks in addition to boxes")
+    ap.add_argument("--goal-mask", action="store_true",
+                    help="render goalpost masks + contours instead of boxes")
+    ap.add_argument("--player-mask", action="store_true",
+                    help="render player/person masks + contours "
+                         "instead of boxes")
     ap.add_argument("--json-out", default="")
     args = ap.parse_args()
 
@@ -242,20 +262,22 @@ def main():
         pk = probs.cpu().numpy()  # (K,Q) small
         boxes_k = outs["pred_boxes"].cpu().numpy()  # (K,Q,4) cxcywh
 
-        # draw order: area/line regions first (underneath), then boxes
-        draw_order = sorted(range(K),
-                            key=lambda k: styles[k][0] not in ("area", "line"))
+        # draw order: region classes (area/line/goal-masks) first (underneath),
+        # then boxes
+        def _underneath(k):
+            return (styles[k][0] in ("area", "line")
+                    or (styles[k][0] == "goal" and args.goal_mask)
+                    or (styles[k][0] == "player" and args.player_mask))
+        draw_order = sorted(range(K), key=lambda k: not _underneath(k))
         for k in draw_order:
             kind, color = styles[k]
-            if kind in ("area", "line"):
+            if _underneath(k):
                 sel = np.where(pk[k] >= args.thresh)[0][:args.max_boxes]
                 if len(sel):
                     mlog_all = outs["pred_masks"][k, sel].cpu().numpy()
                     union = np.zeros((vh, vw), dtype=bool)
                     for j in range(len(sel)):
-                        mlog = cv2.resize(mlog_all[j], (vw, vh),
-                                          interpolation=cv2.INTER_LINEAR)
-                        union |= sigmoid(mlog) > 0.5
+                        union |= mask_to_frame(mlog_all[j], vw, vh)
                     if union.any():
                         a_f = 0.3 if kind == "area" else 0.4
                         blend = frame[union].astype(np.float32) * (1 - a_f) + \
@@ -300,9 +322,7 @@ def main():
                         if best is None or score > best[0]:
                             best = (score, x1, y1, x2, y2)
                         if args.ball_mask:
-                            mlog = cv2.resize(mlog_all[j], (vw, vh),
-                                              interpolation=cv2.INTER_LINEAR)
-                            mb = sigmoid(mlog) > 0.5
+                            mb = mask_to_frame(mlog_all[j], vw, vh)
                             overlay = np.zeros_like(frame)
                             overlay[mb] = color
                             frame[mb] = cv2.addWeighted(overlay, 0.45, frame,
