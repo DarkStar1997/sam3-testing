@@ -9,8 +9,10 @@ Draw styles by prompt substring:
   *player*/*person*/*athlete* -> orange boxes (union masks + contours with --player-mask)
   *goal*/*post*/*upright*/*crossbar* -> magenta boxes for every query >= thresh
               (masks + contours with --goal-mask)
+  *umpire*/*referee*/*official* -> orange boxes for every query >= thresh
   *boundary*/*line* -> yellow union mask + contours
-  *field*/*pitch*/*area*/*court*/*floor* -> translucent blue union mask of queries
+  *pitch*/*wicket* -> translucent tan union mask (drawn under everything else)
+  *field*/*area*/*court*/*floor* -> translucent blue union mask of queries
               >= thresh (drawn first, under everything else)
   other    -> cyan boxes for every query >= thresh
 Producer thread (decode/preprocess) + async writer thread (bounded FIFO queue).
@@ -72,11 +74,15 @@ def style_for(prompt):
         return ("ball", (0, 255, 0))
     if "score" in p:
         return ("score", (255, 255, 255))
+    if "umpire" in p or "referee" in p or "official" in p:
+        return ("umpire", (0, 140, 255))
     if "player" in p or "person" in p or "athlete" in p:
         return ("player", (255, 200, 0))
     if "goal" in p or "post" in p or "upright" in p or "crossbar" in p:
         return ("goal", (255, 0, 255))
-    if "field" in p or "pitch" in p or "area" in p or "court" in p or "floor" in p:
+    if "pitch" in p or "wicket" in p:
+        return ("pitch", (42, 165, 222))
+    if "field" in p or "area" in p or "court" in p or "floor" in p:
         return ("area", (255, 0, 0))
     return ("box", (255, 200, 0))
 
@@ -265,7 +271,7 @@ def main():
         # draw order: region classes (area/line/goal-masks) first (underneath),
         # then boxes
         def _underneath(k):
-            return (styles[k][0] in ("area", "line")
+            return (styles[k][0] in ("area", "line", "pitch")
                     or (styles[k][0] == "goal" and args.goal_mask)
                     or (styles[k][0] == "player" and args.player_mask))
         draw_order = sorted(range(K), key=lambda k: not _underneath(k))
